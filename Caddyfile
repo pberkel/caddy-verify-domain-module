@@ -1,0 +1,18 @@
+{
+    on_demand_tls {
+        ask http://localhost/ask
+    }
+    order verify_domain last
+}
+
+http:// {
+    verify_domain {
+        ask http://localhost/ask
+    }
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+}
