@@ -7,6 +7,7 @@ A simple configuration example:
 
 ```
 {
+    auto_https disable_redirects
     on_demand_tls {
         ask http://localhost/ask
     }
@@ -15,7 +16,7 @@ A simple configuration example:
 
 http:// {
     verify_domain {
-        ask http://localhost/ask
+        listen_url http://localhost/ask
     }
 }
 
@@ -26,8 +27,8 @@ https:// {
 }
 ```
 
-When Caddy makes a request to the defined `on_demand_tls.ask` URL, this module intercepts and verifies value of query string parameter `domain` ensuring:
+When Caddy makes a request to the defined `on_demand_tls.listen_url` URL, this module intercepts and verifies value of query string parameter `domain` ensuring:
 - it is not an IP address,
-- is it DNS resolvable,
+- it is DNS resolvable,
 - it does not resolve to a loopback or private IP address,
 - it resolves to the current Caddy server address (by making a simple HTTP challenge request)

@@ -25,19 +25,19 @@ func init() {
 }
 
 type GlobalConfig struct {
-	Ask  string `json:"ask,omitempty"`
-	Port string `json:"port,omitempty"`
-	Salt string `json:"salt,omitempty"`
+	Listen string `json:"listen_url,omitempty"`
+	Port   string `json:"challenge_port,omitempty"`
+	Salt   string `json:"challenge_salt,omitempty"`
 }
 
 type VerifyDomain struct {
 	GlobalConfig
-	Ask        string `json:"ask,omitempty"`
-	Port       string `json:"port,omitempty"`
-	Salt       string `json:"salt,omitempty"`
+	Listen     string `json:"listen_url,omitempty"`
+	Port       string `json:"challenge_port,omitempty"`
+	Salt       string `json:"challenge_salt,omitempty"`
 	logger     *zap.Logger
 	client     *http.Client
-	askUrl     *url.URL
+	listenUrl  *url.URL
 	verifyPort string
 }
 
@@ -66,18 +66,18 @@ func (vd *VerifyDomain) Provision(ctx caddy.Context) error {
 		// A global config is defined, always use it
 		vd.GlobalConfig = *cfg
 	}
-	// Ask URL not provided, check for globally defined one
-	if vd.Ask == "" {
-		if vd.GlobalConfig.Ask == "" {
-			// load TLS Automation OnDemand Ask URL
+	// Listen URL not provided, check for globally defined one
+	if vd.Listen == "" {
+		if vd.GlobalConfig.Listen == "" {
+			// load TLS Automation OnDemand Listen URL
 			if tlsAppIface, err := ctx.App("tls"); err == nil {
 				tlsApp := tlsAppIface.(*caddytls.TLS)
 				if tlsApp.Automation != nil && tlsApp.Automation.OnDemand != nil && tlsApp.Automation.OnDemand.Ask != "" {
-					vd.GlobalConfig.Ask = tlsApp.Automation.OnDemand.Ask
+					vd.GlobalConfig.Listen = tlsApp.Automation.OnDemand.Ask
 				}
 			}
 		}
-		vd.Ask = vd.GlobalConfig.Ask
+		vd.Listen = vd.GlobalConfig.Listen
 	}
 	// Salt not provided, check for globally defined one
 	if vd.Salt == "" {
@@ -93,8 +93,8 @@ func (vd *VerifyDomain) Provision(ctx caddy.Context) error {
 // Validate implements caddy.Validator
 func (vd *VerifyDomain) Validate() error {
 	var err error
-	if vd.Ask != "" {
-		vd.askUrl, err = url.ParseRequestURI(vd.Ask)
+	if vd.Listen != "" {
+		vd.listenUrl, err = url.ParseRequestURI(vd.Listen)
 		if err != nil {
 			return err
 		}
@@ -117,9 +117,9 @@ func (vd VerifyDomain) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	}
 
 	// Handle verification check request
-	if vd.askUrl != nil {
-		// Host may not specified if Ask URL was configured as an absolute path
-		if (vd.askUrl.Host == "" || r.Host == vd.askUrl.Host) && r.URL.Path == vd.askUrl.Path && r.URL.Query().Has("domain") {
+	if vd.listenUrl != nil {
+		// Host may not specified if Listen URL was configured as an absolute path
+		if (vd.listenUrl.Host == "" || r.Host == vd.listenUrl.Host) && r.URL.Path == vd.listenUrl.Path && r.URL.Query().Has("domain") {
 			domain := r.URL.Query().Get("domain")
 			respCode, respMsg := vd.verifyDomain(domain)
 			http.Error(w, respMsg, respCode)

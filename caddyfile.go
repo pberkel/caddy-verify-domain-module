@@ -28,15 +28,15 @@ func (v *VerifyDomain) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		}
 		for d.NextBlock(0) {
 			switch d.Val() {
-			case "ask":
-				if !d.Args(&v.Ask) {
+			case "listen_url":
+				if !d.Args(&v.Listen) {
 					return d.ArgErr()
 				}
-			case "port":
+			case "challenge_port":
 				if !d.Args(&v.Port) {
 					return d.ArgErr()
 				}
-			case "salt":
+			case "challenge_salt":
 				if !d.Args(&v.Salt) {
 					return d.ArgErr()
 				}
