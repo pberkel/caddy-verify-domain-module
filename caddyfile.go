@@ -36,12 +36,8 @@ func (v *VerifyDomain) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.Args(&v.Port) {
 					return d.ArgErr()
 				}
-			case "request_salt":
-				if !d.Args(&v.RequestSalt) {
-					return d.ArgErr()
-				}
-			case "response_salt":
-				if !d.Args(&v.ResponseSalt) {
+			case "salt":
+				if !d.Args(&v.Salt) {
 					return d.ArgErr()
 				}
 			}

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,22 +13,32 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/modules/caddytls"
 	"go.uber.org/zap"
 )
+
+// Global configuration variable
+var cfg *GlobalConfig
 
 func init() {
 	caddy.RegisterModule(VerifyDomain{})
 }
 
+type GlobalConfig struct {
+	Ask  string `json:"ask,omitempty"`
+	Port string `json:"port,omitempty"`
+	Salt string `json:"salt,omitempty"`
+}
+
 type VerifyDomain struct {
-	Ask          string `json:"ask,omitempty"`
-	Port         string `json:"port,omitempty"`
-	RequestSalt  string `json:"request_salt,omitempty"`
-	ResponseSalt string `json:"response_salt,omitempty"`
-	logger       *zap.Logger
-	client       *http.Client
-	askUrl       *url.URL
-	verifyPort   string
+	GlobalConfig
+	Ask        string `json:"ask,omitempty"`
+	Port       string `json:"port,omitempty"`
+	Salt       string `json:"salt,omitempty"`
+	logger     *zap.Logger
+	client     *http.Client
+	askUrl     *url.URL
+	verifyPort string
 }
 
 // CaddyModule returns the Caddy module information
@@ -49,58 +58,73 @@ func (vd *VerifyDomain) Provision(ctx caddy.Context) error {
 			return http.ErrUseLastResponse
 		},
 	}
+	// Check for global config
+	if cfg == nil {
+		// No global config defined yet, create new one
+		cfg = &vd.GlobalConfig
+	} else {
+		// A global config is defined, always use it
+		vd.GlobalConfig = *cfg
+	}
+	// Ask URL not provided, check for globally defined one
+	if vd.Ask == "" {
+		if vd.GlobalConfig.Ask == "" {
+			// load TLS Automation OnDemand Ask URL
+			if tlsAppIface, err := ctx.App("tls"); err == nil {
+				tlsApp := tlsAppIface.(*caddytls.TLS)
+				if tlsApp.Automation != nil && tlsApp.Automation.OnDemand != nil && tlsApp.Automation.OnDemand.Ask != "" {
+					vd.GlobalConfig.Ask = tlsApp.Automation.OnDemand.Ask
+				}
+			}
+		}
+		vd.Ask = vd.GlobalConfig.Ask
+	}
+	// Salt not provided, check for globally defined one
+	if vd.Salt == "" {
+		if vd.GlobalConfig.Salt == "" {
+			// No global salt, generate one automatically
+			vd.GlobalConfig.Salt = generateSalt(8)
+		}
+		vd.Salt = vd.GlobalConfig.Salt
+	}
 	return nil
 }
 
 // Validate implements caddy.Validator
 func (vd *VerifyDomain) Validate() error {
 	var err error
-	if vd.Ask == "" {
-		return fmt.Errorf("No Ask URL configured")
-	}
-	vd.askUrl, err = url.Parse(vd.Ask)
-	if err != nil {
-		return err
-	}
-	// make sure port is actually a valid integer
-	if _, err := strconv.Atoi(vd.Port); err == nil {
-		vd.verifyPort = ":" + vd.Port
-	} else {
-		// if port not explicitly defined, use port from ask URL
-		if vd.askUrl.Port() != "" {
-			vd.verifyPort = ":" + vd.askUrl.Port()
+	if vd.Ask != "" {
+		vd.askUrl, err = url.ParseRequestURI(vd.Ask)
+		if err != nil {
+			return err
 		}
 	}
-	// RequestSalt not provided, automatically generate one
-	if vd.RequestSalt == "" {
-		vd.RequestSalt = generateSalt(10)
+	// Make sure port is actually a valid integer
+	if _, err := strconv.Atoi(vd.Port); err == nil {
+		vd.verifyPort = ":" + vd.Port
 	}
-	// ResponseSalt not provided, automatically generate one
-	if vd.ResponseSalt == "" {
-		vd.ResponseSalt = generateSalt(10)
-	}
-	return nil
-}
-
-// Cleanup resources made during provisioning
-func (vd *VerifyDomain) Cleanup() error {
 	return nil
 }
 
 func (vd VerifyDomain) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
 	// Handle verification check response
-	if r.Header.Get("X-Caddy-Validation-Request") == generateHash(r.Host, vd.RequestSalt) {
-		hash := generateHash(r.Host, vd.ResponseSalt)
-		w.Header().Set("X-Caddy-Validation-Response", hash)
+	if reqHash := r.Header.Get("X-Caddy-Verification-Request"); reqHash != "" {
+		if reqHash == generateHash(r.Host, vd.Salt, true) {
+			resHash := generateHash(r.Host, vd.Salt, false)
+			w.Header().Set("X-Caddy-Verification-Response", resHash)
+		}
 	}
 
 	// Handle verification check request
-	if r.Host == vd.askUrl.Host && r.URL.Path == vd.askUrl.Path && r.URL.Query().Has("domain") {
-		domain := r.URL.Query().Get("domain")
-		respCode, respMsg := vd.verifyDomain(domain)
-		http.Error(w, respMsg, respCode)
-		return nil
+	if vd.askUrl != nil {
+		// Host may not specified if Ask URL was configured as an absolute path
+		if (vd.askUrl.Host == "" || r.Host == vd.askUrl.Host) && r.URL.Path == vd.askUrl.Path && r.URL.Query().Has("domain") {
+			domain := r.URL.Query().Get("domain")
+			respCode, respMsg := vd.verifyDomain(domain)
+			http.Error(w, respMsg, respCode)
+			return nil
+		}
 	}
 
 	return next.ServeHTTP(w, r)
@@ -131,13 +155,13 @@ func (vd *VerifyDomain) verifyDomain(domain string) (int, string) {
 		return http.StatusBadRequest, "Error creating HTTP verification request"
 	}
 	// set validation request header
-	creq.Header.Set("X-Caddy-Validation-Request", generateHash(host, vd.RequestSalt))
+	creq.Header.Set("X-Caddy-Verification-Request", generateHash(host, vd.Salt, true))
 	cres, err := vd.client.Do(creq)
 	if err != nil {
 		return http.StatusBadRequest, "Error completing HTTP verification request"
 	}
 	// verify validation response header
-	if cres.Header.Get("X-Caddy-Validation-Response") != generateHash(host, vd.ResponseSalt) {
+	if cres.Header.Get("X-Caddy-Verification-Response") != generateHash(host, vd.Salt, false) {
 		return http.StatusBadRequest, "Invalid or missing verification response"
 	}
 
@@ -145,9 +169,15 @@ func (vd *VerifyDomain) verifyDomain(domain string) (int, string) {
 	return http.StatusOK, "Domain verified"
 }
 
-func generateHash(input string, salt string) string {
-	data := sha256.Sum256([]byte(salt + input))
-	return hex.EncodeToString(data[:4])
+func generateHash(input string, salt string, saltFirst bool) string {
+	var data []byte
+	if saltFirst {
+		data = []byte(salt + input)
+	} else {
+		data = []byte(input + salt)
+	}
+	output := sha256.Sum256(data)
+	return hex.EncodeToString(output[:4])
 }
 
 func generateSalt(length int) string {
@@ -162,7 +192,6 @@ func generateSalt(length int) string {
 // Interface guards
 var (
 	_ caddy.Provisioner           = (*VerifyDomain)(nil)
-	_ caddy.CleanerUpper          = (*VerifyDomain)(nil)
 	_ caddy.Validator             = (*VerifyDomain)(nil)
 	_ caddyhttp.MiddlewareHandler = (*VerifyDomain)(nil)
 )
