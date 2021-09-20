@@ -12,26 +12,29 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
 	"go.uber.org/zap"
 )
 
 // Global configuration variable
-var cfg *GlobalConfig
+var cfg *Config
 
 func init() {
 	caddy.RegisterModule(VerifyDomain{})
+	httpcaddyfile.RegisterHandlerDirective("verify_domain", parseCaddyfile)
 }
 
-type GlobalConfig struct {
+type Config struct {
 	Listen string `json:"listen_url,omitempty"`
 	Port   string `json:"challenge_port,omitempty"`
 	Salt   string `json:"challenge_salt,omitempty"`
 }
 
 type VerifyDomain struct {
-	GlobalConfig
+	Config
 	Listen     string `json:"listen_url,omitempty"`
 	Port       string `json:"challenge_port,omitempty"`
 	Salt       string `json:"challenge_salt,omitempty"`
@@ -49,6 +52,42 @@ func (VerifyDomain) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+// parseCaddyfile unmarshals tokens from h into a new VerifyDomain
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	v := new(VerifyDomain)
+	err := v.UnmarshalCaddyfile(h.Dispenser)
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// UnmarshalCaddyfile implements caddyfile.Unmarshaler
+func (v *VerifyDomain) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() {
+		if d.NextArg() {
+			return d.ArgErr()
+		}
+		for nesting := d.Nesting(); d.NextBlock(nesting); {
+			switch d.Val() {
+			case "listen_url":
+				if !d.Args(&v.Listen) {
+					return d.ArgErr()
+				}
+			case "challenge_port":
+				if !d.Args(&v.Port) {
+					return d.ArgErr()
+				}
+			case "challenge_salt":
+				if !d.Args(&v.Salt) {
+					return d.ArgErr()
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // Provision VerifyDomain configuration
 func (vd *VerifyDomain) Provision(ctx caddy.Context) error {
 	vd.logger = ctx.Logger(vd)
@@ -61,32 +100,34 @@ func (vd *VerifyDomain) Provision(ctx caddy.Context) error {
 	// Check for global config
 	if cfg == nil {
 		// No global config defined yet, create new one
-		cfg = &vd.GlobalConfig
+		cfg = &vd.Config
 	} else {
 		// A global config is defined, always use it
-		vd.GlobalConfig = *cfg
+		vd.Config = *cfg
 	}
 	// Listen URL not provided, check for globally defined one
 	if vd.Listen == "" {
-		if vd.GlobalConfig.Listen == "" {
+		if vd.Config.Listen == "" {
 			// load TLS Automation OnDemand Listen URL
 			if tlsAppIface, err := ctx.App("tls"); err == nil {
 				tlsApp := tlsAppIface.(*caddytls.TLS)
 				if tlsApp.Automation != nil && tlsApp.Automation.OnDemand != nil && tlsApp.Automation.OnDemand.Ask != "" {
-					vd.GlobalConfig.Listen = tlsApp.Automation.OnDemand.Ask
+					vd.Config.Listen = tlsApp.Automation.OnDemand.Ask
 				}
 			}
 		}
-		vd.Listen = vd.GlobalConfig.Listen
+		vd.Listen = vd.Config.Listen
 	}
+	vd.logger.Debug("Listen: " + vd.Listen)
 	// Salt not provided, check for globally defined one
 	if vd.Salt == "" {
-		if vd.GlobalConfig.Salt == "" {
+		if vd.Config.Salt == "" {
 			// No global salt, generate one automatically
-			vd.GlobalConfig.Salt = generateSalt(8)
+			vd.Config.Salt = generateSalt(8)
 		}
-		vd.Salt = vd.GlobalConfig.Salt
+		vd.Salt = vd.Config.Salt
 	}
+	vd.logger.Debug("Salt: " + vd.Salt)
 	return nil
 }
 
@@ -194,4 +235,5 @@ var (
 	_ caddy.Provisioner           = (*VerifyDomain)(nil)
 	_ caddy.Validator             = (*VerifyDomain)(nil)
 	_ caddyhttp.MiddlewareHandler = (*VerifyDomain)(nil)
+	_ caddyfile.Unmarshaler       = (*VerifyDomain)(nil)
 )
